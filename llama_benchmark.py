@@ -6,7 +6,7 @@ import re
 import json
 import time
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, TorchAoConfig
 from huggingface_hub import notebook_login
 from datasets import load_dataset
 from tqdm import tqdm
@@ -29,21 +29,25 @@ huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
 def load_model_and_tokenizer(model_name, load_in_float16=False, use_dynamic_quantization=False):
     tokenizer = AutoTokenizer.from_pretrained(model_name, token=huggingface_token)
     if load_in_float16:
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, token=huggingface_token)
+        model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cuda', torch_dtype=torch.float16, token=huggingface_token)
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name, token=huggingface_token)
+        if use_dynamic_quantization:
+            quantization_config = TorchAoConfig("int8_weight_only")
+            model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cuda', quantization_config=quantization_config, token=huggingface_token)
+            print("Dynamic quantization int8_weight_only applied to model.")
+        else:
+            model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cuda', token=huggingface_token)
 
     model.eval()
 
-    if use_dynamic_quantization:
-        quantize_(model, int8_weight_only())
-        print("Dynamic quantization applied to model.")
-
-    model.to('cuda' if torch.cuda.is_available() else 'cpu')
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
+    
+    # print("\n\nLayer dtypes:")
+    # for name, param in model.named_parameters():
+    #     print(f"{name}: dtype={param.dtype}")
+    print(model.base_model)
+    
     return model, tokenizer
 
 
@@ -213,8 +217,8 @@ def save_data(file_name, predictions, labels, subjects, overall_accuracy, subjec
 def main():
     model_name = "meta-llama/Llama-3.2-1B-Instruct"
     load_in_float16 = False
-    use_dynamic_quantization = False
-    results_file_name = 'Llama-3.2-1B-Instruct_mmlu_evaluation_results_batched'
+    use_dynamic_quantization = True
+    results_file_name = 'Llama-3.2-1B-Instruct_mmlu_evaluation_results_batched_quant_int8'
     split = 'test'
     batch_size = 4
 
@@ -234,8 +238,9 @@ def main():
     labels = []
     subjects = []
 
-    writer = SummaryWriter()
-
+    log_dir = f'runs/{results_file_name}'
+    writer = SummaryWriter(log_dir=log_dir)
+    
     start_time = time.time()
 
     total_memory_allocated = 0
