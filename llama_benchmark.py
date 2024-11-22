@@ -6,7 +6,7 @@ import re
 import json
 import time
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, TorchAoConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, TorchAoConfig, BitsAndBytesConfig
 from huggingface_hub import notebook_login
 from datasets import load_dataset
 from tqdm import tqdm
@@ -26,15 +26,25 @@ from dotenv import load_dotenv
 load_dotenv()
 huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
 
-def load_model_and_tokenizer(model_name, load_in_float16=False, use_dynamic_quantization=False):
+def load_model_and_tokenizer(model_name, load_in_float16=False, use_dynamic_quantization=False, quant_type='int8'):
     tokenizer = AutoTokenizer.from_pretrained(model_name, token=huggingface_token)
     if load_in_float16:
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cuda', torch_dtype=torch.float16, token=huggingface_token)
     else:
         if use_dynamic_quantization:
-            quantization_config = TorchAoConfig("int8_weight_only")
+            if quant_type == 'int4':
+                quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+            elif quant_type == 'int8':
+                quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+            else:
+                raise Exception(f'Invalid quantization type {quant_type}')
+                
             model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cuda', quantization_config=quantization_config, token=huggingface_token)
-            print("Dynamic quantization int8_weight_only applied to model.")
+            print(f"Dynamic quantization {quant_type} applied to model.")
+            
+            # quantization_config = TorchAoConfig("int8_weight_only")
+            # model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cuda', quantization_config=quantization_config, token=huggingface_token)
+            # print("Dynamic quantization int8_weight_only applied to model.")
         else:
             model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cuda', token=huggingface_token)
 
@@ -218,13 +228,15 @@ def main():
     model_name = "meta-llama/Llama-3.2-1B-Instruct"
     load_in_float16 = False
     use_dynamic_quantization = True
-    results_file_name = 'Llama-3.2-1B-Instruct_mmlu_evaluation_results_batched_quant_int8'
+    quant_type = 'int4'
+    results_file_name = 'Llama-3.2-1B-Instruct_mmlu_evaluation_results_batched_bnbquant_int4'
     split = 'test'
     batch_size = 4
 
     model, tokenizer = load_model_and_tokenizer(model_name,
                                                 load_in_float16=load_in_float16,
-                                                use_dynamic_quantization=use_dynamic_quantization)
+                                                use_dynamic_quantization=use_dynamic_quantization,
+                                                quant_type=quant_type)
 
     dataset = load_and_parse_dataset('cais/mmlu', parse_function=parse_mmlu_example, split=split, subset='all', max_samples=None)
 
