@@ -6,6 +6,7 @@ import re
 import json
 import time
 
+import wandb
 import pandas as pd
 
 from torchinfo import summary
@@ -142,14 +143,7 @@ def prepare_finetuning_data(dataset, hugging_face_dataset=False):
     finetuning_dataset = dataset.map(create_finetuning_examples, remove_columns=dataset.column_names)
     return finetuning_dataset
 
-def fine_tune_model_with_lora(model, tokenizer, train_dataset, val_dataset, batch_size, model_save_dir):
-    lora_config = LoraConfig(
-        task_type="CAUSAL_LM",
-        inference_mode=False,
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.1
-    )
+def fine_tune_model_with_lora(model, tokenizer, lora_config, train_dataset, val_dataset, batch_size, model_save_dir):
 
     model = get_peft_model(model, lora_config)
     print("\nModel adapted with LoRA.")
@@ -164,7 +158,7 @@ def fine_tune_model_with_lora(model, tokenizer, train_dataset, val_dataset, batc
     print(f"\nMemory Allocated: {memory_allocated:.2f} MB")
     print(f"Memory Reserved: {memory_reserved:.2f} MB\n")
     
-    train_dataset = prepare_finetuning_data(train_dataset, hugging_face_dataset=True)
+    train_dataset = prepare_finetuning_data(train_dataset)#, hugging_face_dataset=True)
     val_dataset = prepare_finetuning_data(val_dataset, hugging_face_dataset=True)
     
     train_dataset = train_dataset.map(
@@ -197,7 +191,7 @@ def fine_tune_model_with_lora(model, tokenizer, train_dataset, val_dataset, batc
         logging_steps=100,
         fp16=True,
         save_total_limit=3,
-        report_to="none"
+        report_to="wandb"
     )
 
     data_collator = DataCollatorForSeq2Seq(tokenizer, model=model, padding=True)
@@ -225,8 +219,9 @@ def main():
     use_dynamic_quantization = False
     quant_type = 'int4'
     batch_size = 2
+    run_name = 'finetuned_model_with_lora_fp16'
     
-    model_save_dir = './finetuned_model_with_lora_fp16_hf_dataset'
+    model_save_dir = f'./{run_name}'
     
     model, tokenizer = load_model_and_tokenizer(model_name,
                                                 load_in_float16=load_in_float16,
@@ -251,8 +246,36 @@ def main():
     val_dataset = load_dataset('cais/mmlu', 'all')['validation']
     print(f"Loaded {len(val_dataset)} validation samples.")
 
-    fine_tune_model_with_lora(model, tokenizer, train_dataset, val_dataset, batch_size, model_save_dir)
+    lora_r = 16
+    lora_alpha = 16
+    lora_dropout = 0.1
+    
+    lora_config = LoraConfig(
+        task_type="CAUSAL_LM",
+        inference_mode=False,
+        r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout
+    )
+    
+    wandb.init(
+        project="fine_tuning_with_lora",
+        name=run_name,
+        config={
+            "model_name": model_name,
+            "batch_size": batch_size,
+            "fp16": load_in_float16,
+            "quant": use_dynamic_quantization,
+            "quant_type": quant_type,
+            "lora_r": lora_r,
+            "lora_alpha": lora_alpha,
+            "lora_dropout": lora_dropout,
+        }
+    )
+    
+    fine_tune_model_with_lora(model, tokenizer, lora_config, train_dataset, val_dataset, batch_size, model_save_dir)
 
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
