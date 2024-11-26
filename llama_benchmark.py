@@ -12,12 +12,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 from collections import defaultdict
 
-from torchao.quantization.quant_api import (
-    quantize_,
-    int8_dynamic_activation_int8_weight,
-    int4_weight_only,
-    int8_weight_only
-)
+from peft import PeftModel
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -60,6 +55,21 @@ def load_model_and_tokenizer(model_name, load_in_float16=False, use_dynamic_quan
     
     return model, tokenizer
 
+
+def load_finetuned_model_and_tokenizer(model_path):
+    model = AutoModelForCausalLM.from_pretrained(model_path, device_map='cuda', torch_dtype=torch.float16, token=huggingface_token)
+    model = PeftModel.from_pretrained(model, model_path)
+    
+    model.eval()
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_path, token=huggingface_token)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    print(f"Finetuned Model and tokenizer loaded successfully from {model_path}.")
+    print(model.base_model)
+    
+    return model, tokenizer
 
 def parse_mmlu_example(example):
     question = example['question'].strip()
@@ -105,7 +115,7 @@ def create_prompt(question, options, few_shot=False, examples=None):
             option_labels = ['A', 'B', 'C', 'D']
             for label, option_text in zip(option_labels, ex['options']):
                 prompt += f"{label}. {option_text}\n"
-            prompt += 'Your response should end with "The best answer is [the_answer_letter]" where [the_answer_letter] is one of A, B, C, or D.\n'
+            prompt += 'Your response should end with "The best answer is [the_answer_letter]." where [the_answer_letter] is one of A, B, C, or D.\n'
             prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
             prompt += f"The best answer is {ex['answer']}\n\n"
 
@@ -139,7 +149,7 @@ def extract_choice(output):
 
 def predict_single_example(model, tokenizer, question, options, few_shot=False, examples=None, max_new_tokens=5):
     prompt = create_prompt(question, options, few_shot, examples)
-    inputs = tokenizer(prompt, return_tensors='pt', truncation=False, max_length=1024).to(model.device)
+    inputs = tokenizer(prompt, return_tensors='pt', truncation=False).to(model.device)
 
     with torch.no_grad():
         outputs = model.generate(
@@ -226,17 +236,23 @@ def save_data(file_name, predictions, labels, subjects, overall_accuracy, subjec
 
 def main():
     model_name = "meta-llama/Llama-3.2-1B-Instruct"
-    load_in_float16 = False
-    use_dynamic_quantization = True
-    quant_type = 'int4'
-    results_file_name = 'Llama-3.2-1B-Instruct_mmlu_evaluation_results_batched_bnbquant_int4'
+    load_in_float16 = True
+    use_dynamic_quantization = False
+    quant_type = 'int8'
+    results_file_name = 'Llama-3.2-1B-Instruct_mmlu_evaluation_results_fp16_test_finetuned'
     split = 'test'
     batch_size = 4
-
-    model, tokenizer = load_model_and_tokenizer(model_name,
-                                                load_in_float16=load_in_float16,
-                                                use_dynamic_quantization=use_dynamic_quantization,
-                                                quant_type=quant_type)
+    
+    load_finetuned_model = True
+    finetuned_model_path = './finetuned_model_with_lora_fp16_hf_dataset'
+    
+    if load_finetuned_model:
+        model, tokenizer = load_finetuned_model_and_tokenizer(finetuned_model_path)
+    else:
+        model, tokenizer = load_model_and_tokenizer(model_name,
+                                                    load_in_float16=load_in_float16,
+                                                    use_dynamic_quantization=use_dynamic_quantization,
+                                                    quant_type=quant_type)
 
     dataset = load_and_parse_dataset('cais/mmlu', parse_function=parse_mmlu_example, split=split, subset='all', max_samples=None)
 
